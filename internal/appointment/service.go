@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type CreateAppointmentRequest struct {
@@ -54,14 +55,15 @@ func (s *Service) getAppointment(id uint) (*Appointment, error) {
 	return &apt, nil
 }
 
-func (s *Service) updateAppointmentStatus(apt *Appointment, status AppointmentStatus, extraFields map[string]interface{}) error {
-	updates := map[string]interface{}{
-		"status": status.String(),
+func getAppointmentForUpdate(tx *gorm.DB, id uint) (*Appointment, error) {
+	var apt Appointment
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&apt, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errors.New("预约不存在")
+		}
+		return nil, err
 	}
-	for k, v := range extraFields {
-		updates[k] = v
-	}
-	return s.db.Model(apt).Updates(updates).Error
+	return &apt, nil
 }
 
 // ==================== 预约核心方法 ====================
@@ -136,25 +138,28 @@ func (s *Service) CreateAppointment(patientID uint, req *CreateAppointmentReques
 }
 
 func (s *Service) CancelAppointment(appointmentID uint, patientID uint) error {
-	apt, err := s.getAppointment(appointmentID)
-	if err != nil {
-		return err
-	}
-
-	if !apt.BelongsToPatient(patientID) {
-		return errors.New("无权取消他人预约")
-	}
-
-	if !apt.CanCancel() {
-		return fmt.Errorf("当前预约状态为%s，无法取消", apt.GetStatus())
-	}
-
 	tx := s.db.Begin()
 	defer func() {
 		if r := recover(); r != nil {
 			tx.Rollback()
 		}
 	}()
+
+	apt, err := getAppointmentForUpdate(tx, appointmentID)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	if !apt.BelongsToPatient(patientID) {
+		tx.Rollback()
+		return errors.New("无权取消他人预约")
+	}
+
+	if !apt.CanCancel() {
+		tx.Rollback()
+		return fmt.Errorf("当前预约状态为%s，无法取消", apt.GetStatus())
+	}
 
 	if err := tx.Model(apt).Update("status", AppointmentStatusCanceled.String()).Error; err != nil {
 		tx.Rollback()
@@ -171,25 +176,42 @@ func (s *Service) CancelAppointment(appointmentID uint, patientID uint) error {
 }
 
 func (s *Service) CompleteAppointment(appointmentID uint, doctorID uint, remark string) error {
-	apt, err := s.getAppointment(appointmentID)
+	tx := s.db.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	apt, err := getAppointmentForUpdate(tx, appointmentID)
 	if err != nil {
+		tx.Rollback()
 		return err
 	}
 
 	if !apt.BelongsToDoctor(doctorID) {
+		tx.Rollback()
 		return errors.New("无权操作他人预约")
 	}
 
 	if !apt.CanComplete() {
+		tx.Rollback()
 		return fmt.Errorf("当前预约状态为%s，无法标记完成", apt.GetStatus())
 	}
 
-	extra := map[string]interface{}{}
+	updates := map[string]interface{}{
+		"status": AppointmentStatusCompleted.String(),
+	}
 	if remark != "" {
-		extra["remark"] = remark
+		updates["remark"] = remark
 	}
 
-	return s.updateAppointmentStatus(apt, AppointmentStatusCompleted, extra)
+	if err := tx.Model(apt).Updates(updates).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	return tx.Commit().Error
 }
 
 // ==================== 预约查询方法 ====================
@@ -283,25 +305,35 @@ func (s *Service) checkPatientTimeConflict(patientID uint, date string, startTim
 // ==================== 评价方法（独立模块） ====================
 
 func (s *Service) CreateReview(appointmentID uint, patientID uint, req *CreateReviewRequest) (*Review, error) {
-	apt, err := s.getAppointment(appointmentID)
+	tx := s.db.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	apt, err := getAppointmentForUpdate(tx, appointmentID)
 	if err != nil {
+		tx.Rollback()
 		return nil, err
 	}
 
 	if !apt.BelongsToPatient(patientID) {
+		tx.Rollback()
 		return nil, errors.New("无权评价他人预约")
 	}
 
 	if !apt.CanReview() {
+		tx.Rollback()
 		return nil, fmt.Errorf("仅已完成的预约可评价，当前状态为%s", apt.GetStatus())
 	}
 
 	var existing Review
-	err = s.db.Where("appointment_id = ?", appointmentID).First(&existing).Error
-	if err == nil {
+	if err := tx.Where("appointment_id = ?", appointmentID).First(&existing).Error; err == nil {
+		tx.Rollback()
 		return nil, errors.New("该预约已评价过")
-	}
-	if !errors.Is(err, gorm.ErrRecordNotFound) {
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		tx.Rollback()
 		return nil, err
 	}
 
@@ -314,10 +346,16 @@ func (s *Service) CreateReview(appointmentID uint, patientID uint, req *CreateRe
 	}
 
 	if err := review.ValidateRating(); err != nil {
+		tx.Rollback()
 		return nil, err
 	}
 
-	if err := s.db.Create(review).Error; err != nil {
+	if err := tx.Create(review).Error; err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+
+	if err := tx.Commit().Error; err != nil {
 		return nil, err
 	}
 
