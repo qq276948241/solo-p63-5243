@@ -25,6 +25,11 @@ type UpdateStatusRequest struct {
 	Remark string `json:"remark"`
 }
 
+type CreateReviewRequest struct {
+	Rating  int    `json:"rating" binding:"required,min=1,max=5"`
+	Comment string `json:"comment"`
+}
+
 type Service struct {
 	db              *gorm.DB
 	scheduleService *schedule.Service
@@ -268,4 +273,85 @@ func (s *Service) GetAppointmentByID(id uint) (*Appointment, error) {
 		return nil, err
 	}
 	return &appointment, nil
+}
+
+func (s *Service) CreateReview(appointmentID uint, patientID uint, req *CreateReviewRequest) (*Review, error) {
+	var appointment Appointment
+	if err := s.db.First(&appointment, appointmentID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errors.New("预约不存在")
+		}
+		return nil, err
+	}
+
+	if appointment.PatientID != patientID {
+		return nil, errors.New("无权评价他人预约")
+	}
+
+	if appointment.Status != StatusCompleted {
+		return nil, errors.New("仅已完成的预约可评价")
+	}
+
+	var existing Review
+	err := s.db.Where("appointment_id = ?", appointmentID).First(&existing).Error
+	if err == nil {
+		return nil, errors.New("该预约已评价过")
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+
+	review := &Review{
+		AppointmentID: appointmentID,
+		PatientID:     patientID,
+		DoctorID:      appointment.DoctorID,
+		Rating:        req.Rating,
+		Comment:       req.Comment,
+	}
+
+	if err := s.db.Create(review).Error; err != nil {
+		return nil, err
+	}
+
+	return review, nil
+}
+
+func (s *Service) GetDoctorRating(doctorID uint) (*DoctorRating, error) {
+	var result struct {
+		AvgRating  float64
+		TotalCount int64
+	}
+
+	err := s.db.Model(&Review{}).
+		Where("doctor_id = ?", doctorID).
+		Select("AVG(rating) as avg_rating, COUNT(*) as total_count").
+		Scan(&result).Error
+	if err != nil {
+		return nil, err
+	}
+
+	ratingCount := make(map[int]int64)
+	for i := 1; i <= 5; i++ {
+		var count int64
+		s.db.Model(&Review{}).Where("doctor_id = ? AND rating = ?", doctorID, i).Count(&count)
+		ratingCount[i] = count
+	}
+
+	return &DoctorRating{
+		DoctorID:    doctorID,
+		AvgRating:   result.AvgRating,
+		TotalCount:  result.TotalCount,
+		RatingCount: ratingCount,
+	}, nil
+}
+
+func (s *Service) GetDoctorReviews(doctorID uint) ([]ReviewDetail, error) {
+	var reviews []ReviewDetail
+	err := s.db.Table("reviews").
+		Select("reviews.id, users.real_name as patient_name, reviews.rating, reviews.comment, reviews.created_at").
+		Joins("LEFT JOIN users ON reviews.patient_id = users.id").
+		Where("reviews.doctor_id = ?", doctorID).
+		Order("reviews.created_at DESC").
+		Scan(&reviews).Error
+	return reviews, err
 }

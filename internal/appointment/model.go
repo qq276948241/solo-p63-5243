@@ -52,3 +52,33 @@ type AppointmentDetail struct {
 	Remark        string `json:"remark"`
 	CreatedAt     string `json:"created_at"`
 }
+
+type Review struct {
+	ID            uint           `gorm:"primaryKey" json:"id"`
+	AppointmentID uint           `gorm:"not null;uniqueIndex" json:"appointment_id"`
+	PatientID     uint           `gorm:"not null;index" json:"patient_id"`
+	DoctorID      uint           `gorm:"not null;index" json:"doctor_id"`
+	Rating        int            `gorm:"not null" json:"rating"`
+	Comment       string         `gorm:"type:text" json:"comment"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
+	Appointment   Appointment    `gorm:"foreignKey:AppointmentID" json:"-"`
+	Patient       user.User      `gorm:"foreignKey:PatientID" json:"patient,omitempty"`
+	Doctor        user.User      `gorm:"foreignKey:DoctorID" json:"-"`
+}
+
+type DoctorRating struct {
+	DoctorID    uint    `json:"doctor_id"`
+	AvgRating   float64 `json:"avg_rating"`
+	TotalCount  int64   `json:"total_count"`
+	RatingCount map[int]int64 `json:"rating_count"`
+}
+
+type ReviewDetail struct {
+	ID          uint   `json:"id"`
+	PatientName string `json:"patient_name"`
+	Rating      int    `json:"rating"`
+	Comment     string `json:"comment"`
+	CreatedAt   string `json:"created_at"`
+}

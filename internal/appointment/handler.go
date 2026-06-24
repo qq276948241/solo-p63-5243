@@ -175,6 +175,58 @@ func (h *Handler) GetAppointmentDetail(c *gin.Context) {
 	common.Success(c, appointment)
 }
 
+func (h *Handler) CreateReview(c *gin.Context) {
+	userCtx := common.GetCurrentUser(c)
+	if userCtx == nil || userCtx.Role != user.RolePatient {
+		common.Forbidden(c, "仅患者可评价")
+		return
+	}
+
+	idStr := c.Param("id")
+	id, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		common.ParamError(c, "预约ID格式错误")
+		return
+	}
+
+	var req CreateReviewRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ParamError(c, "参数错误: "+err.Error())
+		return
+	}
+
+	review, err := h.service.CreateReview(uint(id), userCtx.UserID, &req)
+	if err != nil {
+		common.Error(c, 400, err.Error())
+		return
+	}
+
+	common.SuccessWithMsg(c, "评价成功", review)
+}
+
+func (h *Handler) GetDoctorRating(c *gin.Context) {
+	userCtx := common.GetCurrentUser(c)
+	if userCtx == nil {
+		common.Unauthorized(c, "用户未认证")
+		return
+	}
+
+	idStr := c.Param("id")
+	id, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		common.ParamError(c, "医生ID格式错误")
+		return
+	}
+
+	rating, err := h.service.GetDoctorRating(uint(id))
+	if err != nil {
+		common.ServerError(c, "获取评分失败")
+		return
+	}
+
+	common.Success(c, rating)
+}
+
 func (h *Handler) RegisterRoutes(r *gin.RouterGroup) {
 	appointmentGroup := r.Group("/appointment")
 	appointmentGroup.Use(common.JWTAuth())
@@ -185,5 +237,7 @@ func (h *Handler) RegisterRoutes(r *gin.RouterGroup) {
 		appointmentGroup.POST("/:id/cancel", common.RoleAuth(user.RolePatient), h.CancelAppointment)
 		appointmentGroup.POST("/:id/complete", common.RoleAuth(user.RoleDoctor), h.CompleteAppointment)
 		appointmentGroup.GET("/doctor/today", common.RoleAuth(user.RoleDoctor), h.GetDoctorTodayAppointments)
+		appointmentGroup.POST("/:id/review", common.RoleAuth(user.RolePatient), h.CreateReview)
+		appointmentGroup.GET("/doctor/:id/rating", h.GetDoctorRating)
 	}
 }

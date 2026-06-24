@@ -24,6 +24,7 @@ func main() {
 		&user.DoctorProfile{},
 		&schedule.Schedule{},
 		&appointment.Appointment{},
+		&appointment.Review{},
 	); err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}
