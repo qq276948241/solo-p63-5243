@@ -2,16 +2,40 @@ package appointment
 
 import (
 	"clinic/internal/user"
+	"fmt"
 	"time"
 
 	"gorm.io/gorm"
 )
 
+type AppointmentStatus string
+
 const (
-	StatusPending   = "pending"
-	StatusConfirmed = "confirmed"
-	StatusCompleted = "completed"
-	StatusCanceled  = "canceled"
+	AppointmentStatusPending   AppointmentStatus = "pending"
+	AppointmentStatusConfirmed AppointmentStatus = "confirmed"
+	AppointmentStatusCompleted AppointmentStatus = "completed"
+	AppointmentStatusCanceled  AppointmentStatus = "canceled"
+)
+
+func (s AppointmentStatus) Valid() bool {
+	switch s {
+	case AppointmentStatusPending,
+		AppointmentStatusConfirmed,
+		AppointmentStatusCompleted,
+		AppointmentStatusCanceled:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s AppointmentStatus) String() string {
+	return string(s)
+}
+
+const (
+	ReviewRatingMin = 1
+	ReviewRatingMax = 5
 )
 
 type Appointment struct {
@@ -30,6 +54,36 @@ type Appointment struct {
 	DeletedAt  gorm.DeletedAt `gorm:"index" json:"-"`
 	Patient    user.User      `gorm:"foreignKey:PatientID" json:"patient,omitempty"`
 	Doctor     user.User      `gorm:"foreignKey:DoctorID" json:"doctor,omitempty"`
+}
+
+func (a *Appointment) GetStatus() AppointmentStatus {
+	return AppointmentStatus(a.Status)
+}
+
+func (a *Appointment) SetStatus(s AppointmentStatus) {
+	a.Status = s.String()
+}
+
+func (a *Appointment) CanCancel() bool {
+	s := a.GetStatus()
+	return s == AppointmentStatusPending || s == AppointmentStatusConfirmed
+}
+
+func (a *Appointment) CanComplete() bool {
+	s := a.GetStatus()
+	return s == AppointmentStatusPending || s == AppointmentStatusConfirmed
+}
+
+func (a *Appointment) CanReview() bool {
+	return a.GetStatus() == AppointmentStatusCompleted
+}
+
+func (a *Appointment) BelongsToPatient(patientID uint) bool {
+	return a.PatientID == patientID
+}
+
+func (a *Appointment) BelongsToDoctor(doctorID uint) bool {
+	return a.DoctorID == doctorID
 }
 
 type AppointmentDetail struct {
@@ -68,11 +122,18 @@ type Review struct {
 	Doctor        user.User      `gorm:"foreignKey:DoctorID" json:"-"`
 }
 
+func (r *Review) ValidateRating() error {
+	if r.Rating < ReviewRatingMin || r.Rating > ReviewRatingMax {
+		return fmt.Errorf("评分必须在 %d-%d 之间", ReviewRatingMin, ReviewRatingMax)
+	}
+	return nil
+}
+
 type DoctorRating struct {
-	DoctorID    uint    `json:"doctor_id"`
-	AvgRating   float64 `json:"avg_rating"`
-	TotalCount  int64   `json:"total_count"`
-	RatingCount map[int]int64 `json:"rating_count"`
+	DoctorID    uint            `json:"doctor_id"`
+	AvgRating   float64         `json:"avg_rating"`
+	TotalCount  int64           `json:"total_count"`
+	RatingCount map[int]int64   `json:"rating_count"`
 }
 
 type ReviewDetail struct {
